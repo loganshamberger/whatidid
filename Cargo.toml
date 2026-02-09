@@ -1,0 +1,27 @@
+[package]
+name = "kb"
+version = "0.2.0"
+edition = "2021"
+description = "A local knowledge base CLI for AI agents"
+
+[[bin]]
+name = "whatidid"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled", "vtab"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+thiserror = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
