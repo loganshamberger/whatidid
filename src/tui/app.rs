@@ -58,6 +58,10 @@ impl ListItem {
     }
 }
 
+/// Info needed to perform an edit after suspending the TUI.
+/// Holds (page_id, temp_file_path, page_version).
+pub type PendingEdit = (String, std::path::PathBuf, i64);
+
 /// The main application state for the TUI browser.
 pub struct App {
     pub running: bool,
@@ -74,6 +78,10 @@ pub struct App {
     pub links: Vec<Link>,
     /// True if waiting for second 'g' in gg sequence.
     pub pending_g: bool,
+    /// Set when user presses 'e' — the event loop suspends TUI to open $EDITOR.
+    pub pending_edit: Option<PendingEdit>,
+    /// Set when user presses 'L' — the event loop suspends TUI to edit labels in $EDITOR.
+    pub pending_label_edit: Option<PendingEdit>,
 }
 
 impl App {
@@ -90,6 +98,8 @@ impl App {
             content_lines: Vec::new(),
             links: Vec::new(),
             pending_g: false,
+            pending_edit: None,
+            pending_label_edit: None,
         }
     }
 
@@ -432,6 +442,58 @@ impl App {
         self.search_input.clear();
     }
 
+    /// Prepare to edit the currently selected page in $EDITOR.
+    /// Returns None if the selection is a Space or the list is empty.
+    /// On success, writes the page content to a temp file and returns the edit info.
+    pub fn prepare_edit(&self, conn: &Connection) -> Result<Option<PendingEdit>, KbError> {
+        if self.items.is_empty() {
+            return Ok(None);
+        }
+
+        let page = match &self.items[self.cursor] {
+            ListItem::Space(_) => return Ok(None),
+            ListItem::Page { page, .. } => repo::get_page(conn, &page.id)?,
+            ListItem::SearchResult(r) => repo::get_page(conn, &r.page.id)?,
+        };
+
+        let tmp_dir = std::env::temp_dir();
+        let filename = format!("whatidid-{}.md", &page.id[..8.min(page.id.len())]);
+        let tmp_path = tmp_dir.join(filename);
+        std::fs::write(&tmp_path, &page.content).map_err(KbError::Io)?;
+
+        Ok(Some((page.id, tmp_path, page.version)))
+    }
+
+    /// Prepare to edit labels for the currently selected page in $EDITOR.
+    /// Returns None if the selection is a Space or the list is empty.
+    /// On success, writes the current labels to a temp file and returns the edit info.
+    pub fn prepare_edit_labels(&self, conn: &Connection) -> Result<Option<PendingEdit>, KbError> {
+        if self.items.is_empty() {
+            return Ok(None);
+        }
+
+        let page = match &self.items[self.cursor] {
+            ListItem::Space(_) => return Ok(None),
+            ListItem::Page { page, .. } => repo::get_page(conn, &page.id)?,
+            ListItem::SearchResult(r) => repo::get_page(conn, &r.page.id)?,
+        };
+
+        let tmp_dir = std::env::temp_dir();
+        let filename = format!("whatidid-labels-{}.md", &page.id[..8.min(page.id.len())]);
+        let tmp_path = tmp_dir.join(filename);
+
+        let mut content = format!("# Labels for: {}\n", page.title);
+        content.push_str("# One label per line. Empty lines and lines starting with # are ignored.\n");
+        for label in &page.labels {
+            content.push_str(label);
+            content.push('\n');
+        }
+
+        std::fs::write(&tmp_path, &content).map_err(KbError::Io)?;
+
+        Ok(Some((page.id, tmp_path, page.version)))
+    }
+
     fn current_space(&self) -> Option<&Space> {
         match &self.nav_state {
             NavState::PageList { space } => Some(space),
@@ -457,8 +519,8 @@ impl App {
         match self.mode {
             Mode::Search => "Type query, Enter:submit, Esc:cancel",
             Mode::Normal => match self.focus {
-                Focus::List => "j/k:nav  Enter:select  Esc:back  /:search  q:quit",
-                Focus::Content => "j/k:scroll  h/Esc:back  /:search  q:quit",
+                Focus::List => "j/k:nav  Enter:select  e:edit  L:labels  Esc:back  /:search  q:quit",
+                Focus::Content => "j/k:scroll  e:edit  L:labels  h/Esc:back  /:search  q:quit",
             },
         }
     }
@@ -587,6 +649,99 @@ mod tests {
     fn test_app_nav_state_titles() {
         let app = App::new();
         assert_eq!(app.left_pane_title(), "Spaces");
+    }
+
+    #[test]
+    fn test_prepare_edit_empty_list() {
+        let conn = setup_test_db();
+        let app = App::new();
+        let result = app.prepare_edit(&conn).expect("prepare_edit should not error");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepare_edit_space_returns_none() {
+        let conn = setup_test_db();
+        repo::create_space(&conn, "s", "S", "desc").unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        assert_eq!(app.items.len(), 1);
+
+        let result = app.prepare_edit(&conn).expect("prepare_edit should not error");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepare_edit_page_returns_edit_info() {
+        let conn = setup_test_db();
+        let space = repo::create_space(&conn, "s", "S", "").unwrap();
+        let page = repo::create_page(
+            &conn, &space.id, None, "My Page", crate::models::PageType::Reference,
+            "Hello world", None, &[], "u", "a",
+        ).unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        app.select(&conn).unwrap(); // Drill into space
+        assert_eq!(app.items.len(), 1);
+
+        let result = app.prepare_edit(&conn).expect("prepare_edit should not error");
+        assert!(result.is_some());
+        let (page_id, tmp_path, version) = result.unwrap();
+        assert_eq!(page_id, page.id);
+        assert_eq!(version, 1);
+        // Verify temp file was written with the page content
+        let content = std::fs::read_to_string(&tmp_path).expect("read temp file");
+        assert_eq!(content, "Hello world");
+        // Clean up
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    #[test]
+    fn test_prepare_edit_labels_empty_list() {
+        let conn = setup_test_db();
+        let app = App::new();
+        let result = app.prepare_edit_labels(&conn).expect("should not error");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepare_edit_labels_space_returns_none() {
+        let conn = setup_test_db();
+        repo::create_space(&conn, "s", "S", "desc").unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        assert_eq!(app.items.len(), 1);
+
+        let result = app.prepare_edit_labels(&conn).expect("should not error");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepare_edit_labels_page_returns_edit_info() {
+        let conn = setup_test_db();
+        let space = repo::create_space(&conn, "s", "S", "").unwrap();
+        let page = repo::create_page(
+            &conn, &space.id, None, "My Page", crate::models::PageType::Reference,
+            "content", None, &["rust".to_string(), "testing".to_string()], "u", "a",
+        ).unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        app.select(&conn).unwrap(); // Drill into space
+        assert_eq!(app.items.len(), 1);
+
+        let result = app.prepare_edit_labels(&conn).expect("should not error");
+        assert!(result.is_some());
+        let (page_id, tmp_path, _version) = result.unwrap();
+        assert_eq!(page_id, page.id);
+        let content = std::fs::read_to_string(&tmp_path).expect("read temp file");
+        assert!(content.contains("rust"));
+        assert!(content.contains("testing"));
+        assert!(content.contains("# Labels for: My Page"));
+        let _ = std::fs::remove_file(&tmp_path);
     }
 
     #[test]

@@ -25,9 +25,26 @@ cargo install --path .         # Installs 'whatidid' to ~/.cargo/bin/
 
 Requires `~/.cargo/bin` to be on `PATH`. Verify with `whatidid --version`.
 
+## REQUIRED: Search Before Solving
+
+**Before working on any task, agents MUST search whatidid for relevant prior knowledge.** Search across ALL projects (not just the current one) for pitfalls, patterns, and prior decisions that may inform the approach.
+
+```bash
+whatidid search "relevant keywords"                     # Cross-project full-text search
+whatidid search "topic" --label pitfall                  # Find known pitfalls
+whatidid search "topic" --label pattern                  # Find reusable patterns
+whatidid page list --type decision --label sqlite        # All SQLite decisions across projects
+```
+
+If relevant results are found, reference them in your approach. This prevents repeating mistakes and leverages institutional knowledge.
+
+> **Note**: A `UserPromptSubmit` hook (`hooks/search-before-solving.sh`) runs automatically on each prompt to surface relevant prior knowledge. If you see prior knowledge context injected, review it before proceeding.
+
 ## REQUIRED: Document Decisions with `whatidid`
 
 **All Claude Code instances working in this repository MUST use `whatidid` to record decisions.**
+
+> **Warning**: A Stop hook (`hooks/check-decisions.sh`) will block session completion if it detects discussed-but-unrecorded decisions. Record decisions as you go to avoid being blocked at the end.
 
 The project space `knowledge-base` already exists. When you make a non-trivial decision (architecture choices, trade-offs, tool selections, approach changes, rejected alternatives), record it:
 
@@ -55,11 +72,28 @@ Or using structured sections (preferred for typed pages):
 whatidid page create --space knowledge-base --title "Short decision title" --type decision --agent claude-code --labels "relevant,labels" --sections '{"context":"Why this decision was needed.","options_considered":"1. Option A\n2. Option B","decision":"What was chosen and why.","consequences":"Trade-offs and implications."}'
 ```
 
-**When to record**: Any choice where a reasonable alternative existed.
+### What counts as a "decision"
+
+Record when a reasonable alternative existed. Examples:
+
+- Choosing SQLite over Postgres for storage
+- Using `INSERT OR IGNORE` vs `INSERT ... ON CONFLICT`
+- Deciding to derive content from sections vs storing separately
+- Picking an $EDITOR suspension pattern over an embedded editor for TUI editing
+- Choosing to use external content FTS5 vs regular FTS5
 
 **When NOT to record**: Trivial or forced choices (fixing a typo, following an explicit user instruction with no ambiguity).
 
-To review prior decisions before making new ones:
+### Label strategy
+
+Labels make knowledge discoverable across projects. Apply at two levels:
+
+- **Topic labels** — the technical domain: `sqlite`, `auth`, `caching`, `error-handling`, `testing`, `api-design`, `concurrency`, `rust`, `python`, `typescript`, etc.
+- **Pattern labels** — the kind of lesson: `pitfall` (something that surprised you or broke), `pattern` (a reusable approach that worked well), `tradeoff` (a deliberate compromise worth remembering).
+
+Always include at least one topic label. Add a pattern label when the decision contains a transferable lesson.
+
+### Reviewing prior decisions
 
 ```bash
 whatidid search "topic" --space knowledge-base          # Full-text search
@@ -68,6 +102,41 @@ whatidid page list --space knowledge-base --type decision  # List all decisions
 whatidid page get <id>                                     # Read a specific decision
 whatidid page schema --type decision                       # Show expected sections for a type
 ```
+
+## RECOMMENDED: Document Project Structure
+
+Agents should maintain a nested page hierarchy to document the project as they build:
+
+```
+Root: "Project Documentation" (type: reference, no parent)
+├── L1: Module/component pages (type: architecture, parent = root)
+│   ├── L2: Feature/topic pages (type: reference, parent = L1)
+│   └── L2: Another feature page
+├── L1: Another component
+└── Troubleshooting pages (type: troubleshooting, linked via 'elaborates')
+```
+
+### Creating the hierarchy
+
+```bash
+# Create the root documentation page
+whatidid page create --space knowledge-base --title "Project Documentation" \
+  --type reference --agent claude-code --body "Top-level overview of the project."
+
+# Create a module page (L1) — use the root page ID as parent
+whatidid page create --space knowledge-base --title "TUI Module" \
+  --type architecture --parent <root-page-id> --agent claude-code \
+  --sections '{"context":"...","design":"...","rationale":"..."}'
+
+# Create a feature page (L2) — use the module page ID as parent
+whatidid page create --space knowledge-base --title "TUI Edit Mode" \
+  --type reference --parent <module-page-id> --agent claude-code --body "..."
+
+# Link a troubleshooting page to the module it relates to
+whatidid link create <troubleshooting-page-id> <module-page-id> --relation elaborates
+```
+
+Agents should check for and maintain this hierarchy as they build. Use `whatidid page list --space knowledge-base` to see existing pages before creating new ones.
 
 ## Architecture
 

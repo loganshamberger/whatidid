@@ -2,6 +2,8 @@
 
 A local CLI knowledge base for AI agents. Stores structured knowledge documents (pages) organized into spaces, backed by SQLite with FTS5 full-text search. All output is JSON by default for agent consumption, with `--pretty` for humans.
 
+### This is in active development. Not for production use.
+
 ## Install
 
 ```bash
@@ -118,6 +120,7 @@ Launches a terminal UI for browsing spaces and pages with vim-like navigation:
 | `h`/`Esc` | Go back |
 | `l`/`Tab` | Focus content pane |
 | `/` | Search |
+| `e` | Edit page in $EDITOR |
 | `gg` / `G` | Jump to top / bottom |
 | `q` | Quit |
 
@@ -142,6 +145,42 @@ Pages have a `version` field (starts at 1, incremented on each update). Pass `--
 whatidid page update <ID> --title "Updated" --version 1
 # Fails with VersionConflict if current version != 1
 ```
+
+## Claude Code Hook
+
+The included `hooks/session-summary.sh` hook automatically summarizes every Claude Code session and writes it to whatidid as a `session-log` page. On session end it:
+
+1. Detects changed files via `git diff --stat`
+2. Extracts the conversation transcript
+3. Calls the Anthropic API (Haiku) to produce a structured summary
+4. Writes a page to whatidid with **Summary**, **Open Questions**, and **Files Changed**
+
+### Requirements
+
+- `whatidid` on `PATH`
+- `jq` on `PATH`
+- `ANTHROPIC_API_KEY` environment variable set
+
+The hook fails silently if any dependency is missing — it will never break your session.
+
+### Install
+
+Use the install script:
+
+```bash
+# Global — all Claude Code sessions, all projects (default)
+./scripts/install-hook.sh
+
+# Project-only — just this repo
+./scripts/install-hook.sh --project
+
+# Uninstall — removes from both global and project settings
+./scripts/install-hook.sh --uninstall
+```
+
+The global install copies the hook to `~/.local/share/whatidid/hooks/` and registers it in `~/.claude/settings.json`. The project install uses the hook in-place from the repo via `.claude/settings.json`.
+
+The hook auto-creates a whatidid space per project directory (derived from the folder name), so session logs are organized by project without any manual setup.
 
 ## Configuration
 

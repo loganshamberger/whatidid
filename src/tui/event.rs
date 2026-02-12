@@ -22,6 +22,8 @@ pub enum Action {
     CancelSearch,
     SearchInput(char),
     SearchBackspace,
+    Edit,
+    EditLabels,
     None,
 }
 
@@ -60,6 +62,8 @@ fn map_list_key(app: &App, key: KeyEvent) -> Action {
         KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => Action::GoBack,
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => Action::FocusContent,
         KeyCode::Char('/') => Action::EnterSearch,
+        KeyCode::Char('e') => Action::Edit,
+        KeyCode::Char('L') => Action::EditLabels,
         KeyCode::Char('G') => Action::JumpToBottom,
         KeyCode::Char('g') => {
             if app.pending_g {
@@ -80,6 +84,8 @@ fn map_content_key(app: &App, key: KeyEvent) -> Action {
         KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => Action::FocusList,
         KeyCode::Tab => Action::FocusList,
         KeyCode::Char('/') => Action::EnterSearch,
+        KeyCode::Char('e') => Action::Edit,
+        KeyCode::Char('L') => Action::EditLabels,
         KeyCode::Char('G') => Action::JumpToBottom,
         KeyCode::Char('g') => {
             if app.pending_g {
@@ -168,6 +174,16 @@ pub fn apply_action(
         Action::SearchBackspace => {
             app.search_input.pop();
         }
+        Action::Edit => {
+            if let Some(edit_info) = app.prepare_edit(conn)? {
+                app.pending_edit = Some(edit_info);
+            }
+        }
+        Action::EditLabels => {
+            if let Some(edit_info) = app.prepare_edit_labels(conn)? {
+                app.pending_label_edit = Some(edit_info);
+            }
+        }
         Action::None => {}
     }
     Ok(())
@@ -238,6 +254,32 @@ mod tests {
         assert_eq!(map_key(&app, make_key(KeyCode::Esc)), Action::CancelSearch);
         assert_eq!(map_key(&app, make_key(KeyCode::Backspace)), Action::SearchBackspace);
         assert_eq!(map_key(&app, make_key(KeyCode::Char('a'))), Action::SearchInput('a'));
+    }
+
+    #[test]
+    fn test_edit_key_mapping_list() {
+        let app = App::new();
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('e'))), Action::Edit);
+    }
+
+    #[test]
+    fn test_edit_key_mapping_content() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('e'))), Action::Edit);
+    }
+
+    #[test]
+    fn test_edit_labels_key_mapping_list() {
+        let app = App::new();
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('L'))), Action::EditLabels);
+    }
+
+    #[test]
+    fn test_edit_labels_key_mapping_content() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('L'))), Action::EditLabels);
     }
 
     #[test]
