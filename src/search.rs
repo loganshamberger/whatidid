@@ -27,6 +27,33 @@ pub struct SearchParams {
     pub section: Option<String>,
 }
 
+/// Find the largest char boundary <= `pos` in `s`.
+fn floor_char_boundary(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut i = pos;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Find the smallest char boundary >= `pos` in `s`.
+fn ceil_char_boundary(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut i = pos;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Maximum allowed search query length (characters).
+const MAX_SEARCH_QUERY_LEN: usize = 1000;
+
 /// Generate an excerpt showing the query term in context within the content.
 /// Returns up to ~100 characters centered around the first match.
 fn make_excerpt(content: &str, query: &str) -> String {
@@ -35,8 +62,8 @@ fn make_excerpt(content: &str, query: &str) -> String {
     let clean_query = query.trim_matches('"').to_lowercase();
 
     if let Some(pos) = lower_content.find(&clean_query) {
-        let start = pos.saturating_sub(40);
-        let end = (pos + clean_query.len() + 40).min(content.len());
+        let start = floor_char_boundary(content, pos.saturating_sub(40));
+        let end = ceil_char_boundary(content, (pos + clean_query.len() + 40).min(content.len()));
         let mut excerpt = String::new();
         if start > 0 {
             excerpt.push_str("...");
@@ -49,7 +76,8 @@ fn make_excerpt(content: &str, query: &str) -> String {
     } else {
         // Fallback: first 100 chars.
         if content.len() > 100 {
-            format!("{}...", &content[..100])
+            let end = floor_char_boundary(content, 100);
+            format!("{}...", &content[..end])
         } else {
             content.to_string()
         }
@@ -109,6 +137,24 @@ fn make_excerpt(content: &str, query: &str) -> String {
 /// })?;
 /// ```
 pub fn search_pages(conn: &Connection, params: &SearchParams) -> Result<Vec<SearchResult>, KbError> {
+    // Validate query length to prevent DoS via oversized FTS queries.
+    if let Some(ref q) = params.query {
+        if q.len() > MAX_SEARCH_QUERY_LEN {
+            return Err(KbError::InvalidInput(
+                format!("Search query too long (maximum {} characters)", MAX_SEARCH_QUERY_LEN)
+            ));
+        }
+    }
+
+    // Validate section key: only alphanumeric and underscores to prevent JSON path injection.
+    if let Some(ref section) = params.section {
+        if section.is_empty() || !section.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err(KbError::InvalidInput(
+                "Section key must be non-empty and contain only alphanumeric characters and underscores".to_string()
+            ));
+        }
+    }
+
     let has_fts_query = params.query.is_some();
 
     // FTS queries use a subquery so that snippet() runs in a clean FTS context
@@ -739,6 +785,92 @@ mod tests {
         // Only page-1 has sections with 'context' key AND matches 'Rust'
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].page.id, "page-1");
+    }
+
+    // ===== Security: Unicode safety tests =====
+
+    #[test]
+    fn test_make_excerpt_with_multibyte_no_panic() {
+        // Content with emoji (4 bytes each) — ensures byte-offset slicing doesn't panic
+        let content = "\u{1F600}".repeat(58); // 232 bytes of emoji
+        let excerpt = make_excerpt(&content, "nomatch");
+        assert!(!excerpt.is_empty());
+    }
+
+    #[test]
+    fn test_make_excerpt_with_cjk_around_match() {
+        // CJK chars (3 bytes each) surrounding a search term
+        let prefix = "\u{4E2D}".repeat(20); // 60 bytes
+        let suffix = "\u{4E2D}".repeat(20);
+        let content = format!("{}searchterm{}", prefix, suffix);
+        let excerpt = make_excerpt(&content, "searchterm");
+        assert!(excerpt.to_lowercase().contains("searchterm"));
+    }
+
+    #[test]
+    fn test_make_excerpt_fallback_with_multibyte() {
+        // Content > 100 bytes of multibyte chars, no match — fallback path
+        let content = "\u{4E2D}".repeat(50); // 150 bytes of CJK
+        assert!(content.len() > 100);
+        let excerpt = make_excerpt(&content, "nomatch");
+        assert!(excerpt.ends_with("..."));
+        // The excerpt must be valid UTF-8 (if it weren't, Rust would have panicked)
+    }
+
+    // ===== Security: Section key validation tests =====
+
+    #[test]
+    fn test_section_key_rejects_json_path_traversal() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        for invalid in &["$", "$.context", "", "key-with-dash", "key.dot", "key space"] {
+            let result = search_pages(&conn, &SearchParams {
+                query: None, space_id: None, page_type: None, label: None,
+                created_by_agent: None, section: Some(invalid.to_string()),
+            });
+            assert!(result.is_err(), "Section key '{}' should be rejected", invalid);
+        }
+    }
+
+    #[test]
+    fn test_section_key_accepts_valid_keys() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+        // Valid keys should not error (they just won't match any pages)
+        for valid in &["context", "my_section_2", "CamelCase", "abc123"] {
+            let result = search_pages(&conn, &SearchParams {
+                query: None, space_id: None, page_type: None, label: None,
+                created_by_agent: None, section: Some(valid.to_string()),
+            });
+            assert!(result.is_ok(), "Section key '{}' should be accepted", valid);
+        }
+    }
+
+    // ===== Security: Query length limit tests =====
+
+    #[test]
+    fn test_query_length_limit_rejects_oversized() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+        let long_query = "a".repeat(1001);
+        let result = search_pages(&conn, &SearchParams {
+            query: Some(long_query), space_id: None, page_type: None,
+            label: None, created_by_agent: None, section: None,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_query_at_limit_is_accepted() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+        let query = "a".repeat(1000);
+        let result = search_pages(&conn, &SearchParams {
+            query: Some(query), space_id: None, page_type: None,
+            label: None, created_by_agent: None, section: None,
+        });
+        assert!(result.is_ok());
     }
 
     #[test]

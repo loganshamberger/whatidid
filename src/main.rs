@@ -17,6 +17,90 @@ use output::OutputMode;
 use std::io::{self, Read as _};
 use std::process;
 
+/// Input validation for security hardening.
+mod validation {
+    use crate::db::KbError;
+
+    pub const MAX_SLUG_LEN: usize = 128;
+    pub const MAX_TITLE_LEN: usize = 500;
+    pub const MAX_BODY_LEN: usize = 10_000_000; // 10 MB
+    pub const MAX_LABEL_LEN: usize = 100;
+    pub const MAX_LABELS_COUNT: usize = 50;
+    pub const MAX_SECTIONS_LEN: usize = 10_000_000; // 10 MB
+    pub const MAX_NAME_LEN: usize = 256;
+    pub const MAX_DESCRIPTION_LEN: usize = 2000;
+
+    pub fn validate_slug(slug: &str) -> Result<(), KbError> {
+        if slug.is_empty() {
+            return Err(KbError::InvalidInput("Slug must not be empty".to_string()));
+        }
+        if slug.len() > MAX_SLUG_LEN {
+            return Err(KbError::InvalidInput(format!("Slug too long (max {} characters)", MAX_SLUG_LEN)));
+        }
+        if !slug.starts_with(|c: char| c.is_ascii_lowercase()) {
+            return Err(KbError::InvalidInput("Slug must start with a lowercase letter".to_string()));
+        }
+        if !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+            return Err(KbError::InvalidInput(
+                "Slug must contain only lowercase letters, digits, hyphens, and underscores".to_string()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_title(title: &str) -> Result<(), KbError> {
+        if title.is_empty() {
+            return Err(KbError::InvalidInput("Title must not be empty".to_string()));
+        }
+        if title.len() > MAX_TITLE_LEN {
+            return Err(KbError::InvalidInput(format!("Title too long (max {} characters)", MAX_TITLE_LEN)));
+        }
+        Ok(())
+    }
+
+    pub fn validate_body(body: &str) -> Result<(), KbError> {
+        if body.len() > MAX_BODY_LEN {
+            return Err(KbError::InvalidInput(format!("Body too long (max {} bytes)", MAX_BODY_LEN)));
+        }
+        Ok(())
+    }
+
+    pub fn validate_labels(labels: &[String]) -> Result<(), KbError> {
+        if labels.len() > MAX_LABELS_COUNT {
+            return Err(KbError::InvalidInput(format!("Too many labels (max {})", MAX_LABELS_COUNT)));
+        }
+        for label in labels {
+            if label.len() > MAX_LABEL_LEN {
+                return Err(KbError::InvalidInput(
+                    format!("Label '{}' too long (max {} characters)", label, MAX_LABEL_LEN)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_sections_json(json_str: &str) -> Result<(), KbError> {
+        if json_str.len() > MAX_SECTIONS_LEN {
+            return Err(KbError::InvalidInput(format!("Sections JSON too long (max {} bytes)", MAX_SECTIONS_LEN)));
+        }
+        Ok(())
+    }
+
+    pub fn validate_name(name: &str) -> Result<(), KbError> {
+        if name.len() > MAX_NAME_LEN {
+            return Err(KbError::InvalidInput(format!("Name too long (max {} characters)", MAX_NAME_LEN)));
+        }
+        Ok(())
+    }
+
+    pub fn validate_description(desc: &str) -> Result<(), KbError> {
+        if desc.len() > MAX_DESCRIPTION_LEN {
+            return Err(KbError::InvalidInput(format!("Description too long (max {} characters)", MAX_DESCRIPTION_LEN)));
+        }
+        Ok(())
+    }
+}
+
 /// A local knowledge base CLI for AI agents.
 ///
 /// Manages structured knowledge documents organized into spaces.
@@ -316,6 +400,11 @@ fn run() -> Result<(), db::KbError> {
                 name,
                 description,
             } => {
+                validation::validate_slug(slug)?;
+                if let Some(ref n) = name {
+                    validation::validate_name(n)?;
+                }
+                validation::validate_description(description)?;
                 let display_name = name.as_deref().unwrap_or(slug);
                 let space = repo::create_space(&conn, slug, display_name, description)?;
                 output::print(mode, &space, || output::print_pretty_space(&space));
@@ -361,8 +450,12 @@ fn run() -> Result<(), db::KbError> {
                 let identity = resolve_identity(&cli);
                 let space_id = resolve_space_id(&conn, space)?;
                 let page_type = parse_page_type(r#type)?;
+                validation::validate_title(title)?;
 
-                // Parse sections JSON if provided
+                // Parse and validate sections JSON if provided
+                if let Some(ref s) = sections {
+                    validation::validate_sections_json(s)?;
+                }
                 let sections_value: Option<serde_json::Value> = match sections {
                     Some(ref s) => {
                         let val: serde_json::Value = serde_json::from_str(s)
@@ -380,6 +473,7 @@ fn run() -> Result<(), db::KbError> {
                 }
 
                 let content = read_body(body, *stdin)?;
+                validation::validate_body(&content)?;
                 let label_vec: Vec<String> = labels
                     .as_deref()
                     .unwrap_or("")
@@ -387,6 +481,7 @@ fn run() -> Result<(), db::KbError> {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+                validation::validate_labels(&label_vec)?;
 
                 let page = repo::create_page(
                     &conn,
@@ -415,13 +510,22 @@ fn run() -> Result<(), db::KbError> {
                 version,
                 labels,
             } => {
+                if let Some(ref t) = title {
+                    validation::validate_title(t)?;
+                }
                 let content = if *stdin {
                     Some(read_body(&None, true)?)
                 } else {
                     body.clone()
                 };
+                if let Some(ref c) = content {
+                    validation::validate_body(c)?;
+                }
 
-                // Parse sections JSON if provided
+                // Parse and validate sections JSON if provided
+                if let Some(ref s) = sections {
+                    validation::validate_sections_json(s)?;
+                }
                 let sections_value: Option<serde_json::Value> = match sections {
                     Some(ref s) => {
                         let val: serde_json::Value = serde_json::from_str(s)
@@ -446,6 +550,7 @@ fn run() -> Result<(), db::KbError> {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
+                    validation::validate_labels(&label_vec)?;
                     repo::set_labels(&conn, id, &label_vec)?;
                 }
 
@@ -454,6 +559,7 @@ fn run() -> Result<(), db::KbError> {
             }
             PageAction::Append { id, body, stdin } => {
                 let content = read_body(body, *stdin)?;
+                validation::validate_body(&content)?;
                 if content.is_empty() {
                     return Err(db::KbError::InvalidInput(
                         "No content to append. Use --body or --stdin.".to_string(),
@@ -530,6 +636,9 @@ fn run() -> Result<(), db::KbError> {
             created_by_agent,
             section,
         } => {
+            if let Some(ref q) = query {
+                validation::validate_body(q)?; // reuse body limit as upper bound
+            }
             let space_id = match space {
                 Some(slug) => Some(resolve_space_id(&conn, slug)?),
                 None => None,
@@ -597,5 +706,105 @@ fn main() {
         });
         eprintln!("{}", serde_json::to_string(&error_json).unwrap());
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validation;
+
+    // ===== Slug validation =====
+
+    #[test]
+    fn test_slug_valid() {
+        assert!(validation::validate_slug("my-project").is_ok());
+        assert!(validation::validate_slug("project123").is_ok());
+        assert!(validation::validate_slug("a").is_ok());
+        assert!(validation::validate_slug("test_space").is_ok());
+    }
+
+    #[test]
+    fn test_slug_rejects_empty() {
+        assert!(validation::validate_slug("").is_err());
+    }
+
+    #[test]
+    fn test_slug_rejects_uppercase() {
+        assert!(validation::validate_slug("MyProject").is_err());
+    }
+
+    #[test]
+    fn test_slug_rejects_spaces() {
+        assert!(validation::validate_slug("my project").is_err());
+    }
+
+    #[test]
+    fn test_slug_rejects_special_chars() {
+        assert!(validation::validate_slug("my$project").is_err());
+    }
+
+    #[test]
+    fn test_slug_must_start_with_letter() {
+        assert!(validation::validate_slug("123abc").is_err());
+        assert!(validation::validate_slug("-abc").is_err());
+    }
+
+    #[test]
+    fn test_slug_rejects_too_long() {
+        assert!(validation::validate_slug(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn test_slug_at_max_length() {
+        assert!(validation::validate_slug(&"a".repeat(128)).is_ok());
+    }
+
+    // ===== Title validation =====
+
+    #[test]
+    fn test_title_valid() {
+        assert!(validation::validate_title("My Decision").is_ok());
+    }
+
+    #[test]
+    fn test_title_rejects_empty() {
+        assert!(validation::validate_title("").is_err());
+    }
+
+    #[test]
+    fn test_title_rejects_too_long() {
+        assert!(validation::validate_title(&"x".repeat(501)).is_err());
+    }
+
+    // ===== Body validation =====
+
+    #[test]
+    fn test_body_at_limit() {
+        assert!(validation::validate_body(&"x".repeat(10_000_000)).is_ok());
+    }
+
+    #[test]
+    fn test_body_over_limit() {
+        assert!(validation::validate_body(&"x".repeat(10_000_001)).is_err());
+    }
+
+    // ===== Label validation =====
+
+    #[test]
+    fn test_labels_valid() {
+        let labels: Vec<String> = vec!["rust".into(), "security".into()];
+        assert!(validation::validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn test_labels_too_many() {
+        let labels: Vec<String> = (0..51).map(|i| format!("l{}", i)).collect();
+        assert!(validation::validate_labels(&labels).is_err());
+    }
+
+    #[test]
+    fn test_label_too_long() {
+        let labels = vec!["x".repeat(101)];
+        assert!(validation::validate_labels(&labels).is_err());
     }
 }

@@ -59,8 +59,8 @@ pub enum KbError {
 /// println!("Database at: {:?}", path);
 /// ```
 pub fn db_path() -> Result<PathBuf, KbError> {
-    let path = if let Ok(kb_path) = std::env::var("KB_PATH") {
-        PathBuf::from(kb_path)
+    let (path, is_default) = if let Ok(kb_path) = std::env::var("KB_PATH") {
+        (PathBuf::from(kb_path), false)
     } else {
         let home = dirs::home_dir().ok_or_else(|| {
             KbError::Io(std::io::Error::new(
@@ -68,12 +68,19 @@ pub fn db_path() -> Result<PathBuf, KbError> {
                 "Could not determine home directory",
             ))
         })?;
-        home.join(".knowledge-base").join("kb.db")
+        (home.join(".knowledge-base").join("kb.db"), true)
     };
 
     // Ensure the parent directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        // Restrict directory permissions to owner-only for the default data directory.
+        // We skip this for KB_PATH overrides since the user controls that path.
+        #[cfg(unix)]
+        if is_default {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
     }
 
     Ok(path)
@@ -136,6 +143,9 @@ pub fn open_connection_at(path: &std::path::Path) -> Result<Connection, KbError>
 
     // Set busy timeout to 5 seconds for multi-agent concurrency
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+
+    // Disable trusted_schema to guard against malicious triggers/views in untrusted DB files
+    conn.pragma_update(None, "trusted_schema", "OFF")?;
 
     Ok(conn)
 }
@@ -302,6 +312,41 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM spaces", [], |row| row.get(0))
             .expect("Should be able to query spaces table");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_open_connection_sets_trusted_schema_off() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_trusted_schema.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        let conn = open_connection_at(&db_path).expect("Should open connection");
+
+        let trusted: i64 = conn
+            .pragma_query_value(None, "trusted_schema", |row| row.get(0))
+            .expect("Should query trusted_schema");
+        assert_eq!(trusted, 0, "trusted_schema should be OFF");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_db_directory_permissions_are_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join("kb_perm_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        std::fs::create_dir_all(&temp_dir).expect("create dir");
+        std::fs::set_permissions(&temp_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("set permissions");
+
+        let perms = std::fs::metadata(&temp_dir).expect("metadata").permissions();
+        assert_eq!(perms.mode() & 0o777, 0o700, "Directory should be owner-only");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

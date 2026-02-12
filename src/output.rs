@@ -188,7 +188,12 @@ pub fn print_pretty_search_results(results: &[SearchResult]) {
         } else {
             // Fallback to showing content prefix if no excerpt
             let preview = if result.page.content.len() > 200 {
-                format!("{}...", &result.page.content[..200])
+                // Find the largest char boundary <= 200 to avoid panicking on multibyte UTF-8.
+                let mut end = 200;
+                while end > 0 && !result.page.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &result.page.content[..end])
             } else {
                 result.page.content.clone()
             };
@@ -619,6 +624,33 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("should parse");
         assert!(parsed["sections"].is_object());
         assert_eq!(parsed["sections"]["context"], "We needed a database.");
+    }
+
+    // ===== Security: Unicode panic tests =====
+
+    #[test]
+    fn test_pretty_search_results_cjk_content_does_not_panic() {
+        // 67 CJK chars = 201 bytes; byte 200 falls inside the 67th char
+        let content = "\u{4E2D}".repeat(67);
+        assert!(content.len() > 200);
+        assert!(!content.is_char_boundary(200));
+        let results = vec![SearchResult {
+            page: Page { content, ..fixture_page() },
+            excerpt: "".to_string(),
+        }];
+        print_pretty_search_results(&results); // must not panic
+    }
+
+    #[test]
+    fn test_pretty_search_results_emoji_content_does_not_panic() {
+        // 51 emoji = 204 bytes; byte 200 falls inside the 51st emoji
+        let content = "\u{1F600}".repeat(51);
+        assert!(content.len() > 200);
+        let results = vec![SearchResult {
+            page: Page { content, ..fixture_page() },
+            excerpt: "".to_string(),
+        }];
+        print_pretty_search_results(&results); // must not panic
     }
 
     #[test]
