@@ -602,6 +602,27 @@ pub fn set_labels(conn: &Connection, page_id: &str, labels: &[String]) -> Result
     Ok(())
 }
 
+/// Adds a single label to a page, ignoring duplicates.
+///
+/// Uses `INSERT OR IGNORE` for idempotency — if the label already exists on
+/// the page (UNIQUE constraint on `(page_id, label)`), the operation is a no-op.
+///
+/// # Arguments
+/// * `conn` - Database connection
+/// * `page_id` - The page's unique ID
+/// * `label` - The label string to add
+///
+/// # Errors
+/// Returns `KbError::Db` if the operation fails (e.g., invalid page_id).
+pub fn add_label(conn: &Connection, page_id: &str, label: &str) -> Result<(), KbError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO labels (page_id, label) VALUES (?1, ?2)",
+        rusqlite::params![page_id, label],
+    )
+    .map_err(KbError::Db)?;
+    Ok(())
+}
+
 /// Retrieves all labels for a page.
 ///
 /// # Arguments
@@ -1967,6 +1988,49 @@ mod tests {
             .expect("update");
         assert!(updated.sections.is_some());
         assert!(updated.content.contains("## Context"));
+    }
+
+    #[test]
+    fn test_add_label_new() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let page = create_page(
+            &conn, &space.id, None, "Page", PageType::Reference, "", None,
+            &[], "u", "a",
+        ).expect("create page");
+
+        add_label(&conn, &page.id, "new-label").expect("add label");
+        let labels = get_labels(&conn, &page.id).expect("get labels");
+        assert_eq!(labels, vec!["new-label"]);
+    }
+
+    #[test]
+    fn test_add_label_duplicate_is_noop() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let page = create_page(
+            &conn, &space.id, None, "Page", PageType::Reference, "", None,
+            &["existing".to_string()], "u", "a",
+        ).expect("create page");
+
+        // Adding the same label again should not error
+        add_label(&conn, &page.id, "existing").expect("add duplicate label");
+        let labels = get_labels(&conn, &page.id).expect("get labels");
+        assert_eq!(labels, vec!["existing"]);
+    }
+
+    #[test]
+    fn test_add_label_preserves_existing() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let page = create_page(
+            &conn, &space.id, None, "Page", PageType::Reference, "", None,
+            &["alpha".to_string(), "beta".to_string()], "u", "a",
+        ).expect("create page");
+
+        add_label(&conn, &page.id, "gamma").expect("add label");
+        let labels = get_labels(&conn, &page.id).expect("get labels");
+        assert_eq!(labels, vec!["alpha", "beta", "gamma"]);
     }
 
     #[test]

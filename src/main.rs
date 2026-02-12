@@ -163,6 +163,9 @@ enum PageAction {
         /// Expected version for optimistic concurrency control.
         #[arg(long)]
         version: Option<i64>,
+        /// Comma-separated labels. Replaces all existing labels.
+        #[arg(long)]
+        labels: Option<String>,
     },
     /// Append content to an existing page.
     Append {
@@ -410,6 +413,7 @@ fn run() -> Result<(), db::KbError> {
                 stdin,
                 sections,
                 version,
+                labels,
             } => {
                 let content = if *stdin {
                     Some(read_body(&None, true)?)
@@ -427,7 +431,7 @@ fn run() -> Result<(), db::KbError> {
                     None => None,
                 };
 
-                let page = repo::update_page(
+                repo::update_page(
                     &conn,
                     id,
                     title.as_deref(),
@@ -435,6 +439,17 @@ fn run() -> Result<(), db::KbError> {
                     sections_value.as_ref(),
                     *version,
                 )?;
+
+                if let Some(ref l) = labels {
+                    let label_vec: Vec<String> = l
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    repo::set_labels(&conn, id, &label_vec)?;
+                }
+
+                let page = repo::get_page(&conn, id)?;
                 output::print(mode, &page, || output::print_pretty_page(&page));
             }
             PageAction::Append { id, body, stdin } => {

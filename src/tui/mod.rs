@@ -17,6 +17,8 @@ use rusqlite::Connection;
 
 use crate::db::KbError;
 
+use crate::repo;
+
 use self::app::App;
 use self::event::{map_key, apply_action, Action};
 
@@ -95,6 +97,137 @@ pub fn run_browse(conn: &Connection) -> Result<(), KbError> {
 
                 let content_height = terminal.size().map_err(KbError::Io)?.height.saturating_sub(4);
                 apply_action(&mut app, action, conn, content_height)?;
+
+                // Handle pending edit: suspend TUI, open $EDITOR, restore TUI
+                if let Some((page_id, tmp_path, version)) = app.pending_edit.take() {
+                    // Read original content for change detection
+                    let original = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+
+                    // Suspend TUI
+                    execute!(io::stdout(), LeaveAlternateScreen).map_err(KbError::Io)?;
+                    disable_raw_mode().map_err(KbError::Io)?;
+
+                    // Resolve editor command
+                    let editor = std::env::var("EDITOR")
+                        .or_else(|_| std::env::var("VISUAL"))
+                        .unwrap_or_else(|_| "vi".to_string());
+
+                    // Spawn editor
+                    let status = std::process::Command::new(&editor)
+                        .arg(&tmp_path)
+                        .status();
+
+                    // Restore TUI
+                    enable_raw_mode().map_err(KbError::Io)?;
+                    execute!(io::stdout(), EnterAlternateScreen).map_err(KbError::Io)?;
+                    terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
+                        .map_err(KbError::Io)?;
+
+                    // Process result
+                    match status {
+                        Ok(exit) if exit.success() => {
+                            let new_content = std::fs::read_to_string(&tmp_path)
+                                .unwrap_or_default();
+                            if new_content != original {
+                                match repo::update_page(
+                                    conn, &page_id, None,
+                                    Some(&new_content), None, Some(version),
+                                ) {
+                                    Ok(_) => {
+                                        let _ = repo::add_label(conn, &page_id, "human-edited");
+                                        app.load_items(conn)?;
+                                    }
+                                    Err(KbError::VersionConflict { expected, actual }) => {
+                                        app.content_lines.clear();
+                                        app.content_lines.push(format!(
+                                            "Edit conflict: expected version {}, page is now version {}. Your changes were NOT saved.",
+                                            expected, actual
+                                        ));
+                                        app.content_lines.push("Re-select the page and try again.".to_string());
+                                    }
+                                    Err(e) => {
+                                        app.content_lines.clear();
+                                        app.content_lines.push(format!("Error saving: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            // Editor exited with non-zero — discard changes
+                        }
+                        Err(e) => {
+                            app.content_lines.clear();
+                            app.content_lines.push(format!("Failed to launch editor '{}': {}", editor, e));
+                        }
+                    }
+
+                    // Clean up temp file
+                    let _ = std::fs::remove_file(&tmp_path);
+                }
+
+                // Handle pending label edit: suspend TUI, open $EDITOR, restore TUI
+                if let Some((page_id, tmp_path, _version)) = app.pending_label_edit.take() {
+                    // Read original content for change detection
+                    let original = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+
+                    // Suspend TUI
+                    execute!(io::stdout(), LeaveAlternateScreen).map_err(KbError::Io)?;
+                    disable_raw_mode().map_err(KbError::Io)?;
+
+                    // Resolve editor command
+                    let editor = std::env::var("EDITOR")
+                        .or_else(|_| std::env::var("VISUAL"))
+                        .unwrap_or_else(|_| "vi".to_string());
+
+                    // Spawn editor
+                    let status = std::process::Command::new(&editor)
+                        .arg(&tmp_path)
+                        .status();
+
+                    // Restore TUI
+                    enable_raw_mode().map_err(KbError::Io)?;
+                    execute!(io::stdout(), EnterAlternateScreen).map_err(KbError::Io)?;
+                    terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
+                        .map_err(KbError::Io)?;
+
+                    // Process result
+                    match status {
+                        Ok(exit) if exit.success() => {
+                            let new_content = std::fs::read_to_string(&tmp_path)
+                                .unwrap_or_default();
+                            if new_content != original {
+                                // Parse labels: one per line, skip empty and comment lines
+                                let new_labels: Vec<String> = new_content
+                                    .lines()
+                                    .map(|l| l.trim())
+                                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                                    .map(|l| l.to_string())
+                                    .collect();
+                                match repo::set_labels(conn, &page_id, &new_labels) {
+                                    Ok(_) => {
+                                        let _ = repo::add_label(conn, &page_id, "human-edited");
+                                        app.load_items(conn)?;
+                                    }
+                                    Err(e) => {
+                                        app.content_lines.clear();
+                                        app.content_lines.push(format!("Error saving labels: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            // Editor exited with non-zero — discard changes
+                        }
+                        Err(e) => {
+                            app.content_lines.clear();
+                            app.content_lines.push(format!("Failed to launch editor '{}': {}", editor, e));
+                        }
+                    }
+
+                    // Clean up temp file
+                    let _ = std::fs::remove_file(&tmp_path);
+                }
+
                 last_refresh = Instant::now();
             }
         } else if last_refresh.elapsed() >= REFRESH_INTERVAL {
