@@ -807,4 +807,79 @@ mod tests {
         let labels = vec!["x".repeat(101)];
         assert!(validation::validate_labels(&labels).is_err());
     }
+
+    // ===== Name validation =====
+
+    #[test]
+    fn test_name_valid() {
+        assert!(validation::validate_name("My Project").is_ok());
+    }
+
+    #[test]
+    fn test_name_at_limit() {
+        assert!(validation::validate_name(&"x".repeat(256)).is_ok());
+    }
+
+    #[test]
+    fn test_name_over_limit() {
+        assert!(validation::validate_name(&"x".repeat(257)).is_err());
+    }
+
+    // ===== Description validation =====
+
+    #[test]
+    fn test_description_valid() {
+        assert!(validation::validate_description("A description").is_ok());
+    }
+
+    #[test]
+    fn test_description_at_limit() {
+        assert!(validation::validate_description(&"x".repeat(2000)).is_ok());
+    }
+
+    #[test]
+    fn test_description_over_limit() {
+        assert!(validation::validate_description(&"x".repeat(2001)).is_err());
+    }
+
+    // ===== Sections JSON validation =====
+
+    #[test]
+    fn test_sections_json_valid() {
+        assert!(validation::validate_sections_json("{}").is_ok());
+    }
+
+    #[test]
+    fn test_sections_json_at_limit() {
+        assert!(validation::validate_sections_json(&"x".repeat(10_000_000)).is_ok());
+    }
+
+    #[test]
+    fn test_sections_json_over_limit() {
+        assert!(validation::validate_sections_json(&"x".repeat(10_000_001)).is_err());
+    }
+
+    // ===== Additional boundary tests =====
+
+    #[test]
+    fn test_body_empty_is_valid() {
+        assert!(validation::validate_body("").is_ok());
+    }
+
+    #[test]
+    fn test_labels_empty_is_valid() {
+        let labels: Vec<String> = vec![];
+        assert!(validation::validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn test_label_at_boundary() {
+        let labels: Vec<String> = vec!["x".repeat(100)];
+        assert!(validation::validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn test_title_at_limit() {
+        assert!(validation::validate_title(&"x".repeat(500)).is_ok());
+    }
 }

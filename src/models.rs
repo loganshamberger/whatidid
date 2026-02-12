@@ -343,4 +343,83 @@ mod tests {
         let content = sections_to_content(&sections, PageType::Decision);
         assert_eq!(content, "");
     }
+
+    #[test]
+    fn test_sections_to_content_freeform_type() {
+        let sections = serde_json::json!({
+            "beta": "Second entry.",
+            "alpha": "First entry."
+        });
+        let content = sections_to_content(&sections, PageType::SessionLog);
+        let alpha_pos = content.find("## Alpha").unwrap();
+        let beta_pos = content.find("## Beta").unwrap();
+        assert!(alpha_pos < beta_pos);
+    }
+
+    #[test]
+    fn test_sections_to_content_extra_keys_on_typed() {
+        let sections = serde_json::json!({
+            "context": "Some context.",
+            "custom_field": "Extra info."
+        });
+        let content = sections_to_content(&sections, PageType::Decision);
+        assert!(content.contains("## Context\nSome context."));
+        assert!(content.contains("## Custom Field\nExtra info."));
+        // Schema keys come before extra keys
+        let ctx_pos = content.find("## Context").unwrap();
+        let custom_pos = content.find("## Custom Field").unwrap();
+        assert!(ctx_pos < custom_pos);
+    }
+
+    #[test]
+    fn test_sections_to_content_non_string_values() {
+        let sections = serde_json::json!({
+            "context": 42
+        });
+        let content = sections_to_content(&sections, PageType::Decision);
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_page_type_display() {
+        assert_eq!(format!("{}", PageType::Decision), "decision");
+        assert_eq!(format!("{}", PageType::Architecture), "architecture");
+        assert_eq!(format!("{}", PageType::SessionLog), "session-log");
+        assert_eq!(format!("{}", PageType::Reference), "reference");
+        assert_eq!(format!("{}", PageType::Troubleshooting), "troubleshooting");
+        assert_eq!(format!("{}", PageType::Runbook), "runbook");
+    }
+
+    #[test]
+    fn test_link_relation_display() {
+        assert_eq!(format!("{}", LinkRelation::RelatesTo), "relates-to");
+        assert_eq!(format!("{}", LinkRelation::Supersedes), "supersedes");
+        assert_eq!(format!("{}", LinkRelation::DependsOn), "depends-on");
+        assert_eq!(format!("{}", LinkRelation::Elaborates), "elaborates");
+    }
+
+    #[test]
+    fn test_architecture_section_schema() {
+        let schema = PageType::Architecture.section_schema().expect("Architecture should have schema");
+        assert_eq!(schema.len(), 4);
+        assert_eq!(schema[0].key, "context");
+    }
+
+    #[test]
+    fn test_troubleshooting_section_schema() {
+        let schema = PageType::Troubleshooting.section_schema().expect("Troubleshooting should have schema");
+        assert_eq!(schema.len(), 3);
+        assert_eq!(schema[0].key, "problem");
+        assert_eq!(schema[1].key, "diagnosis");
+        assert_eq!(schema[2].key, "solution");
+    }
+
+    #[test]
+    fn test_runbook_section_schema() {
+        let schema = PageType::Runbook.section_schema().expect("Runbook should have schema");
+        assert_eq!(schema.len(), 3);
+        assert_eq!(schema[0].key, "prerequisites");
+        assert_eq!(schema[1].key, "steps");
+        assert_eq!(schema[2].key, "rollback");
+    }
 }

@@ -2050,4 +2050,222 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert!(pages[0].sections.is_some());
     }
+
+    #[test]
+    fn test_create_space_duplicate_slug() {
+        let conn = setup_test_db();
+        create_space(&conn, "dup", "First", "").expect("first create");
+        let result = create_space(&conn, "dup", "Second", "");
+        assert!(matches!(result, Err(KbError::Db(_))));
+    }
+
+    #[test]
+    fn test_delete_space_not_found() {
+        let conn = setup_test_db();
+        let result = delete_space(&conn, "nonexistent-space");
+        assert!(matches!(result, Err(KbError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_delete_page_not_found() {
+        let conn = setup_test_db();
+        let result = delete_page(&conn, "00000000-0000-0000-0000-000000000000");
+        assert!(matches!(result, Err(KbError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_create_page_invalid_space_id() {
+        let conn = setup_test_db();
+        let result = create_page(
+            &conn,
+            "fake-space-id",
+            None,
+            "Test",
+            PageType::Reference,
+            "content",
+            None,
+            &[],
+            "user",
+            "agent",
+        );
+        assert!(matches!(result, Err(KbError::Db(_))));
+    }
+
+    #[test]
+    fn test_create_page_invalid_parent_id() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let result = create_page(
+            &conn,
+            &space.id,
+            Some("nonexistent-parent-id"),
+            "Test",
+            PageType::Reference,
+            "content",
+            None,
+            &[],
+            "user",
+            "agent",
+        );
+        assert!(matches!(result, Err(KbError::Db(_))));
+    }
+
+    #[test]
+    fn test_create_link_duplicate() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let p1 = create_page(&conn, &space.id, None, "P1", PageType::Reference, "", None, &[], "u", "a")
+            .expect("create p1");
+        let p2 = create_page(&conn, &space.id, None, "P2", PageType::Reference, "", None, &[], "u", "a")
+            .expect("create p2");
+
+        create_link(&conn, &p1.id, &p2.id, LinkRelation::RelatesTo).expect("first link");
+        let result = create_link(&conn, &p1.id, &p2.id, LinkRelation::RelatesTo);
+        assert!(matches!(result, Err(KbError::Db(_))));
+    }
+
+    #[test]
+    fn test_create_link_nonexistent_pages() {
+        let conn = setup_test_db();
+        let result = create_link(
+            &conn,
+            "fake-source-id",
+            "fake-target-id",
+            LinkRelation::RelatesTo,
+        );
+        assert!(matches!(result, Err(KbError::Db(_))));
+    }
+
+    #[test]
+    fn test_list_links_empty() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let page = create_page(&conn, &space.id, None, "P", PageType::Reference, "", None, &[], "u", "a")
+            .expect("create page");
+
+        let links = list_links(&conn, &page.id).expect("list links");
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_set_labels_to_empty() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let page = create_page(
+            &conn, &space.id, None, "P", PageType::Reference, "", None,
+            &["alpha".to_string(), "beta".to_string()], "u", "a",
+        ).expect("create page");
+
+        let labels = get_labels(&conn, &page.id).expect("get labels");
+        assert_eq!(labels.len(), 2);
+
+        set_labels(&conn, &page.id, &[]).expect("set labels to empty");
+        let labels = get_labels(&conn, &page.id).expect("get labels after clear");
+        assert!(labels.is_empty());
+    }
+
+    #[test]
+    fn test_list_pages_multiple_combined_filters() {
+        let conn = setup_test_db();
+        let s1 = create_space(&conn, "s1", "S1", "").expect("create s1");
+        let s2 = create_space(&conn, "s2", "S2", "").expect("create s2");
+
+        // Page in s1, decision, label "important"
+        create_page(
+            &conn, &s1.id, None, "Match", PageType::Decision, "c", None,
+            &["important".to_string()], "u", "a",
+        ).expect("create match");
+
+        // Page in s1, decision, no matching label
+        create_page(
+            &conn, &s1.id, None, "Wrong Label", PageType::Decision, "c", None,
+            &["other".to_string()], "u", "a",
+        ).expect("create wrong label");
+
+        // Page in s1, reference, label "important"
+        create_page(
+            &conn, &s1.id, None, "Wrong Type", PageType::Reference, "c", None,
+            &["important".to_string()], "u", "a",
+        ).expect("create wrong type");
+
+        // Page in s2, decision, label "important"
+        create_page(
+            &conn, &s2.id, None, "Wrong Space", PageType::Decision, "c", None,
+            &["important".to_string()], "u", "a",
+        ).expect("create wrong space");
+
+        let pages = list_pages(&conn, &PageFilters {
+            space_id: Some(s1.id),
+            page_type: Some(PageType::Decision),
+            label: Some("important".to_string()),
+            created_by_user: None,
+            created_by_agent: None,
+        }).expect("list filtered");
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].title, "Match");
+    }
+
+    #[test]
+    fn test_list_pages_no_matches() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        create_page(
+            &conn, &space.id, None, "P", PageType::Reference, "", None,
+            &["exists".to_string()], "u", "a",
+        ).expect("create page");
+
+        let pages = list_pages(&conn, &PageFilters {
+            space_id: Some(space.id),
+            page_type: None,
+            label: Some("nonexistent-label".to_string()),
+            created_by_user: None,
+            created_by_agent: None,
+        }).expect("list");
+
+        assert!(pages.is_empty());
+    }
+
+    #[test]
+    fn test_list_top_level_pages_empty_space() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "empty", "Empty", "").expect("create space");
+
+        let pages = list_top_level_pages(&conn, &space.id).expect("list top-level");
+        assert!(pages.is_empty());
+    }
+
+    #[test]
+    fn test_list_child_pages_no_children() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let leaf = create_page(&conn, &space.id, None, "Leaf", PageType::Reference, "", None, &[], "u", "a")
+            .expect("create leaf");
+
+        let children = list_child_pages(&conn, &leaf.id).expect("list children");
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn test_create_page_with_content_and_sections() {
+        let conn = setup_test_db();
+        let space = create_space(&conn, "s", "S", "").expect("create space");
+        let sections = serde_json::json!({
+            "context": "Some context",
+            "decision": "Some decision",
+        });
+        let explicit_content = "My explicit content that should win";
+        let page = create_page(
+            &conn, &space.id, None, "Both", PageType::Decision,
+            explicit_content, Some(&sections), &[], "u", "a",
+        ).expect("create page");
+
+        assert_eq!(page.content, explicit_content);
+        assert!(page.sections.is_some());
+
+        // Verify persisted correctly
+        let retrieved = get_page(&conn, &page.id).expect("get page");
+        assert_eq!(retrieved.content, explicit_content);
+        assert!(retrieved.sections.is_some());
+    }
 }

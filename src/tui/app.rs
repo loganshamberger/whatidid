@@ -757,4 +757,217 @@ mod tests {
         let item = ListItem::Space(space);
         assert_eq!(item.display_text(), "Name (slug)");
     }
+
+    // --- helper to build an inline Page ---
+    fn make_page(title: &str, page_type: crate::models::PageType) -> Page {
+        Page {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: "sp".into(),
+            parent_id: None,
+            title: title.into(),
+            page_type,
+            content: String::new(),
+            sections: None,
+            created_by_user: "u".into(),
+            created_by_agent: "a".into(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            version: 1,
+            labels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_scroll_content_down_and_up() {
+        let mut app = App::new();
+        app.content_lines = (0..20).map(|i| format!("line {}", i)).collect();
+
+        app.scroll_content_down();
+        app.scroll_content_down();
+        app.scroll_content_down();
+        assert_eq!(app.content_scroll, 3);
+
+        app.scroll_content_up();
+        assert_eq!(app.content_scroll, 2);
+
+        // Scroll up past 0
+        app.content_scroll = 0;
+        app.scroll_content_up();
+        assert_eq!(app.content_scroll, 0);
+    }
+
+    #[test]
+    fn test_scroll_content_to_top_and_bottom() {
+        let mut app = App::new();
+        app.content_lines = (0..50).map(|i| format!("line {}", i)).collect();
+
+        app.scroll_content_to_bottom(20);
+        assert_eq!(app.content_scroll, 30);
+
+        app.scroll_content_to_top();
+        assert_eq!(app.content_scroll, 0);
+    }
+
+    #[test]
+    fn test_cancel_search() {
+        let mut app = App::new();
+        app.enter_search();
+        app.search_input = "test".to_string();
+
+        app.cancel_search();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.search_input.is_empty());
+    }
+
+    #[test]
+    fn test_update_content_empty_items() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        // items is empty by default
+        app.update_content(&conn).unwrap();
+        assert!(app.content_lines.contains(&"(empty)".to_string()));
+    }
+
+    #[test]
+    fn test_select_on_leaf_page() {
+        let conn = setup_test_db();
+        let space = repo::create_space(&conn, "s", "S", "").unwrap();
+        repo::create_page(
+            &conn, &space.id, None, "Leaf", crate::models::PageType::Reference,
+            "body", None, &[], "u", "a",
+        ).unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        app.select(&conn).unwrap(); // drill into space
+        assert!(matches!(app.nav_state, NavState::PageList { .. }));
+
+        // The page has no children, so selecting it should focus Content
+        app.select(&conn).unwrap();
+        assert_eq!(app.focus, Focus::Content);
+    }
+
+    #[test]
+    fn test_go_back_from_search_results() {
+        let conn = setup_test_db();
+        let space = repo::create_space(&conn, "s", "S", "").unwrap();
+        repo::create_page(
+            &conn, &space.id, None, "FindMe", crate::models::PageType::Reference,
+            "content", None, &[], "u", "a",
+        ).unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        app.select(&conn).unwrap(); // into PageList
+
+        // Search
+        app.enter_search();
+        app.search_input = "FindMe".to_string();
+        app.submit_search(&conn).unwrap();
+        assert!(matches!(app.nav_state, NavState::SearchResults { .. }));
+
+        // Go back should restore PageList
+        app.go_back(&conn).unwrap();
+        assert!(matches!(app.nav_state, NavState::PageList { .. }));
+    }
+
+    #[test]
+    fn test_submit_search_empty_input() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+
+        app.enter_search();
+        // leave search_input empty
+        app.submit_search(&conn).unwrap();
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(matches!(app.nav_state, NavState::SpaceList));
+    }
+
+    #[test]
+    fn test_left_pane_title_page_list() {
+        let conn = setup_test_db();
+        let _space = repo::create_space(&conn, "myslug", "MySpace", "").unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        app.select(&conn).unwrap(); // drill into space
+        let title = app.left_pane_title();
+        assert!(title.contains("myslug"), "expected 'myslug' in '{}'", title);
+    }
+
+    #[test]
+    fn test_left_pane_title_search() {
+        let conn = setup_test_db();
+        let space = repo::create_space(&conn, "s", "S", "").unwrap();
+        repo::create_page(
+            &conn, &space.id, None, "P", crate::models::PageType::Reference,
+            "body", None, &[], "u", "a",
+        ).unwrap();
+
+        let mut app = App::new();
+        app.load_initial(&conn).unwrap();
+        app.enter_search();
+        app.search_input = "P".to_string();
+        app.submit_search(&conn).unwrap();
+
+        let title = app.left_pane_title();
+        assert!(title.contains("Search:"), "expected 'Search:' in '{}'", title);
+    }
+
+    #[test]
+    fn test_status_hint_variations() {
+        let mut app = App::new();
+
+        // Search mode
+        app.mode = Mode::Search;
+        let search_hint = app.status_hint();
+        assert!(search_hint.contains("Enter:submit"));
+
+        // Normal + List
+        app.mode = Mode::Normal;
+        app.focus = Focus::List;
+        let list_hint = app.status_hint();
+        assert!(list_hint.contains("j/k:nav"));
+
+        // Normal + Content
+        app.focus = Focus::Content;
+        let content_hint = app.status_hint();
+        assert!(content_hint.contains("j/k:scroll"));
+
+        // All three should be different
+        assert_ne!(search_hint, list_hint);
+        assert_ne!(list_hint, content_hint);
+    }
+
+    #[test]
+    fn test_list_item_display_page_expandable() {
+        let page = make_page("ExpandMe", crate::models::PageType::Decision);
+        let item = ListItem::Page { page, expandable: true };
+        let text = item.display_text();
+        assert!(text.starts_with("[+]"), "expected '[+]' prefix in '{}'", text);
+        assert!(text.contains("ExpandMe"));
+    }
+
+    #[test]
+    fn test_list_item_display_page_leaf() {
+        let page = make_page("LeafPage", crate::models::PageType::Architecture);
+        let item = ListItem::Page { page, expandable: false };
+        let text = item.display_text();
+        assert!(text.starts_with("    "), "expected 4-space prefix in '{}'", text);
+        assert!(text.contains("LeafPage"));
+    }
+
+    #[test]
+    fn test_list_item_display_search_result() {
+        let page = make_page("Result", crate::models::PageType::Troubleshooting);
+        let sr = SearchResult {
+            page,
+            excerpt: "some match".into(),
+        };
+        let item = ListItem::SearchResult(sr);
+        let text = item.display_text();
+        assert!(text.contains("[troubleshooting]"), "expected '[troubleshooting]' in '{}'", text);
+    }
 }

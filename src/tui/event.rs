@@ -294,4 +294,168 @@ mod tests {
         let action = map_key(&app, make_key(KeyCode::Char('g')));
         assert_eq!(action, Action::JumpToTop);
     }
+
+    #[test]
+    fn test_content_focus_h_key() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('h'))), Action::FocusList);
+    }
+
+    #[test]
+    fn test_content_focus_left_key() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Left)), Action::FocusList);
+    }
+
+    #[test]
+    fn test_content_focus_right_key() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Right)), Action::None);
+    }
+
+    #[test]
+    fn test_list_focus_h_key() {
+        let app = App::new();
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('h'))), Action::GoBack);
+    }
+
+    #[test]
+    fn test_list_focus_left_key() {
+        let app = App::new();
+        assert_eq!(map_key(&app, make_key(KeyCode::Left)), Action::GoBack);
+    }
+
+    #[test]
+    fn test_unknown_key_returns_none() {
+        let app = App::new();
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('z'))), Action::None);
+    }
+
+    #[test]
+    fn test_search_mode_unknown_key() {
+        let mut app = App::new();
+        app.mode = Mode::Search;
+        assert_eq!(map_key(&app, make_key(KeyCode::F(1))), Action::None);
+    }
+
+    #[test]
+    fn test_gg_sequence_content_focus() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+
+        // First g: pending_g is false, returns None
+        let action = map_key(&app, make_key(KeyCode::Char('g')));
+        assert_eq!(action, Action::None);
+
+        // Second g: pending_g is true, returns JumpToTop
+        app.pending_g = true;
+        let action = map_key(&app, make_key(KeyCode::Char('g')));
+        assert_eq!(action, Action::JumpToTop);
+    }
+
+    #[test]
+    fn test_content_focus_search_key() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('/'))), Action::EnterSearch);
+    }
+
+    #[test]
+    fn test_content_focus_g_capital() {
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        assert_eq!(map_key(&app, make_key(KeyCode::Char('G'))), Action::JumpToBottom);
+    }
+
+    // --- apply_action tests ---
+
+    use rusqlite::Connection;
+
+    fn setup_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        let sql = include_str!("../../migrations/001_initial.sql");
+        conn.execute_batch(sql).expect("run migration 001");
+        let sql2 = include_str!("../../migrations/002_sections.sql");
+        conn.execute_batch(sql2).expect("run migration 002");
+        let sql3 = include_str!("../../migrations/003_timestamps.sql");
+        conn.execute_batch(sql3).expect("run migration 003");
+        conn
+    }
+
+    #[test]
+    fn test_apply_action_quit() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        apply_action(&mut app, Action::Quit, &conn, 24).unwrap();
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn test_apply_action_focus_content() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        // Add an item so FocusContent is allowed
+        app.items.push(super::super::app::ListItem::Space(
+            crate::repo::create_space(&conn, "s", "S", "").unwrap(),
+        ));
+        apply_action(&mut app, Action::FocusContent, &conn, 24).unwrap();
+        assert_eq!(app.focus, Focus::Content);
+    }
+
+    #[test]
+    fn test_apply_action_focus_content_empty_items() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        // items is empty
+        apply_action(&mut app, Action::FocusContent, &conn, 24).unwrap();
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn test_apply_action_focus_list() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        app.focus = Focus::Content;
+        apply_action(&mut app, Action::FocusList, &conn, 24).unwrap();
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn test_apply_action_enter_search() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        apply_action(&mut app, Action::EnterSearch, &conn, 24).unwrap();
+        assert_eq!(app.mode, Mode::Search);
+    }
+
+    #[test]
+    fn test_apply_action_cancel_search() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        app.enter_search();
+        app.search_input.push_str("hello");
+        apply_action(&mut app, Action::CancelSearch, &conn, 24).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.search_input.is_empty());
+    }
+
+    #[test]
+    fn test_apply_action_search_input() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        apply_action(&mut app, Action::SearchInput('a'), &conn, 24).unwrap();
+        assert_eq!(app.search_input, "a");
+    }
+
+    #[test]
+    fn test_apply_action_search_backspace() {
+        let conn = setup_test_db();
+        let mut app = App::new();
+        app.search_input = "ab".to_string();
+        apply_action(&mut app, Action::SearchBackspace, &conn, 24).unwrap();
+        assert_eq!(app.search_input, "a");
+    }
 }

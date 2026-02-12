@@ -895,4 +895,185 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].page.sections.is_some());
     }
+
+    // ===== Additional coverage tests =====
+
+    #[test]
+    fn test_fts_search_no_results() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        let results = search_pages(&conn, &SearchParams {
+            query: Some("zyxwvutsrqp".to_string()),
+            space_id: None,
+            page_type: None,
+            label: None,
+            created_by_agent: None,
+            section: None,
+        }).expect("Search should succeed even with no matches");
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_fts_search_with_space_filter() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // Search for "Rust" but filter by space-2
+        let results = search_pages(&conn, &SearchParams {
+            query: Some("Rust".to_string()),
+            space_id: Some("space-2".to_string()),
+            page_type: None,
+            label: None,
+            created_by_agent: None,
+            section: None,
+        }).expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.id, "page-5");
+    }
+
+    #[test]
+    fn test_fts_search_with_label_filter() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // Search for "Rust" with label "important" — only page-1 has both
+        let results = search_pages(&conn, &SearchParams {
+            query: Some("Rust".to_string()),
+            space_id: None,
+            page_type: None,
+            label: Some("important".to_string()),
+            created_by_agent: None,
+            section: None,
+        }).expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.id, "page-1");
+    }
+
+    #[test]
+    fn test_fts_search_with_agent_filter() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // Search for "Rust" with agent "copilot" — page-3 has agent copilot and
+        // mentions "Rust" in content ("built-in Rust testing framework")
+        let results = search_pages(&conn, &SearchParams {
+            query: Some("Rust".to_string()),
+            space_id: None,
+            page_type: None,
+            label: None,
+            created_by_agent: Some("copilot".to_string()),
+            section: None,
+        }).expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.id, "page-3");
+    }
+
+    #[test]
+    fn test_non_fts_filter_by_agent_only() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // No query text, filter only by agent "copilot"
+        let results = search_pages(&conn, &SearchParams {
+            query: None,
+            space_id: None,
+            page_type: None,
+            label: None,
+            created_by_agent: Some("copilot".to_string()),
+            section: None,
+        }).expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.id, "page-3");
+    }
+
+    #[test]
+    fn test_non_fts_filter_by_space_only() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // No query text, filter by space-2
+        let results = search_pages(&conn, &SearchParams {
+            query: None,
+            space_id: Some("space-2".to_string()),
+            page_type: None,
+            label: None,
+            created_by_agent: None,
+            section: None,
+        }).expect("Search should succeed");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.id, "page-5");
+    }
+
+    #[test]
+    fn test_fts_search_with_special_characters() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // Hyphens are FTS5 operators; ensure the quoting prevents crashes
+        let results = search_pages(&conn, &SearchParams {
+            query: Some("session-log".to_string()),
+            space_id: None,
+            page_type: None,
+            label: None,
+            created_by_agent: None,
+            section: None,
+        });
+
+        // Should not crash — may return empty results
+        assert!(results.is_ok());
+    }
+
+    #[test]
+    fn test_empty_string_query() {
+        let conn = setup_test_db();
+        insert_test_data(&conn);
+
+        // Empty string query should not panic or error
+        let results = search_pages(&conn, &SearchParams {
+            query: Some("".to_string()),
+            space_id: None,
+            page_type: None,
+            label: None,
+            created_by_agent: None,
+            section: None,
+        });
+
+        // FTS5 with empty MATCH may error or return empty; either is acceptable
+        // as long as it doesn't panic
+        let _ = results;
+    }
+
+    #[test]
+    fn test_make_excerpt_match_at_start() {
+        // Match at the very start — should have no leading "..."
+        let content = "Rust is a systems language for safe concurrency.";
+        let excerpt = make_excerpt(content, "Rust");
+        assert!(!excerpt.starts_with("..."), "Excerpt should not start with '...' when match is at start");
+        assert!(excerpt.contains("Rust"));
+    }
+
+    #[test]
+    fn test_make_excerpt_match_at_end() {
+        // Match at the very end — should have no trailing "..."
+        let content = "We chose the language called Rust";
+        let excerpt = make_excerpt(content, "Rust");
+        assert!(!excerpt.ends_with("..."), "Excerpt should not end with '...' when match is at end");
+        assert!(excerpt.contains("Rust"));
+    }
+
+    #[test]
+    fn test_make_excerpt_short_content_no_match() {
+        // Content < 100 chars with no match — returns full content, no "..."
+        let content = "Short content without the search term.";
+        let excerpt = make_excerpt(content, "zyxwvutsrqp");
+        assert_eq!(excerpt, content);
+        assert!(!excerpt.contains("..."));
+    }
 }

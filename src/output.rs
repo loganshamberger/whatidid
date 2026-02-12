@@ -661,4 +661,86 @@ mod tests {
         // sections should be absent (not null) due to skip_serializing_if
         assert!(parsed.get("sections").is_none());
     }
+
+    // ===== Pretty-print smoke tests =====
+
+    #[test]
+    fn test_print_pretty_space_does_not_panic() {
+        print_pretty_space(&fixture_space());
+    }
+
+    #[test]
+    fn test_print_pretty_page_does_not_panic() {
+        print_pretty_page(&fixture_page());
+    }
+
+    #[test]
+    fn test_print_pretty_page_no_labels_does_not_panic() {
+        print_pretty_page(&fixture_page_no_labels());
+    }
+
+    #[test]
+    fn test_print_pretty_page_with_sections_does_not_panic() {
+        print_pretty_page(&fixture_page_with_sections());
+    }
+
+    #[test]
+    fn test_print_pretty_pages_empty() {
+        print_pretty_pages(&[]);
+    }
+
+    #[test]
+    fn test_print_pretty_pages_multiple() {
+        let pages = vec![fixture_page(), fixture_page_no_labels()];
+        print_pretty_pages(&pages);
+    }
+
+    #[test]
+    fn test_print_pretty_links_empty() {
+        print_pretty_links(&[]);
+    }
+
+    #[test]
+    fn test_print_pretty_links_multiple() {
+        let links = vec![
+            fixture_link(),
+            Link {
+                source_id: "770e8400-e29b-41d4-a716-446655440002".to_string(),
+                target_id: "880e8400-e29b-41d4-a716-446655440003".to_string(),
+                relation: LinkRelation::Supersedes,
+                created_at: "2024-01-15T14:00:00Z".to_string(),
+                updated_at: "2024-01-15T14:00:00Z".to_string(),
+            },
+        ];
+        print_pretty_links(&links);
+    }
+
+    #[test]
+    fn test_print_pretty_search_results_empty() {
+        print_pretty_search_results(&[]);
+    }
+
+    #[test]
+    fn test_print_pretty_search_results_with_excerpt() {
+        let results = vec![fixture_search_result()];
+        print_pretty_search_results(&results);
+    }
+
+    #[test]
+    fn test_print_pretty_search_results_no_excerpt_short_content() {
+        let results = vec![fixture_search_result_no_excerpt()];
+        print_pretty_search_results(&results);
+    }
+
+    #[test]
+    fn test_print_pretty_link_does_not_panic() {
+        print_pretty_link(&fixture_link());
+    }
+
+    #[test]
+    fn test_page_with_empty_labels_serializes() {
+        let page = fixture_page_no_labels();
+        let json = serde_json::to_string(&page).expect("should serialize");
+        assert!(json.contains("\"labels\":[]"));
+    }
 }
